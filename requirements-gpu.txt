@@ -23,5 +23,8 @@ sounddevice>=0.4.6
 # Chinese conversion
 opencc-python-reimplemented>=0.1.7
 
+# Web frontend
+streamlit>=1.31.0
+
 # Model download helper
 huggingface_hub>=0.20.0

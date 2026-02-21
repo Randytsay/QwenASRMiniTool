@@ -166,19 +166,51 @@ if not exist "%GPU_MODEL_DIR%\silero_vad_v4.onnx" (
 :models_ready
 echo.
 
-REM ---- GPU check ---------------------------------------------
-echo  Step 3/3: GPU Check
+REM ---- GPU check & get local IP ------------------------------
+echo  Step 3/3: Launch
 echo  --------------------------------------------------------
 "%PYTHON_EXE%" -c ^
 "import torch; ^
 avail = torch.cuda.is_available(); ^
 print('[OK] CUDA available:', torch.cuda.get_device_name(0)) if avail ^
 else print('[WARN] CUDA not available - will run on CPU')"
+
+REM Get local IP address
+for /f "tokens=*" %%i in ('"%PYTHON_EXE%" -c "import socket; print(socket.gethostbyname(socket.gethostname()))" 2^>nul') do set LOCAL_IP=%%i
+if "!LOCAL_IP!"=="" set LOCAL_IP=localhost
+
+REM ---- Launch Streamlit (background window) ------------------
+echo.
+echo  [>>] Starting Streamlit web frontend...
+set "STREAMLIT_SCRIPT=%SCRIPT_DIR%streamlit_app.py"
+start "Qwen3 ASR - Web" cmd /c ^
+    ""%PYTHON_EXE%" -m streamlit run "%STREAMLIT_SCRIPT%" ^
+    --server.port 8501 ^
+    --server.address 0.0.0.0 ^
+    --browser.gatherUsageStats false ^
+    --theme.base dark ^
+    2>&1 & pause"
+
+REM Wait briefly for Streamlit to bind the port
+timeout /t 3 /nobreak > nul
+
+echo.
+echo  ============================================================
+echo   Streamlit Web Frontend
+echo  ============================================================
+echo.
+echo   Local    : http://localhost:8501
+echo   Network  : http://!LOCAL_IP!:8501
+echo.
+echo   Share the Network URL with anyone on the same LAN.
+echo   For external access, run in a separate terminal:
+echo     npx localtunnel --port 8501
+echo.
+echo  ============================================================
 echo.
 
-REM ---- Launch ------------------------------------------------
-echo  Starting Qwen3 ASR GPU app...
-echo  ============================================================
+REM ---- Launch desktop app (foreground) -----------------------
+echo  [>>] Starting desktop app (app-gpu.py)...
 echo.
 "%PYTHON_EXE%" "%APP_SCRIPT%"
 
