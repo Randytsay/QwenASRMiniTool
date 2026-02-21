@@ -1,9 +1,9 @@
 # Qwen3 ASR MiniTool
 
 本地語音辨識字幕生成工具。基於 Qwen3-ASR-0.6B 模型，
-使用 OpenVINO INT8 量化推理，**目前版本不使用 GPU**，純 CPU 即可執行。
+使用 OpenVINO INT8 量化推理，**EXE 版本不使用 GPU**，純 CPU 即可執行。
 此版本辨識率普通，主要是要你同事、你同學，拷貝給你阿嬤都能免費進行語音辨識。
-之後會調整一個使用 Python 環境的 GPU 專業版本，以提升辨識的正確性和給 LLM 使用。
+若有 NVIDIA GPU（RTX 系列），可使用 **Source 版本**搭配 `start-gpu.bat` 啟動 GPU 模式，載入 1.7B 模型以獲得更高辨識率。
 
 ---
 
@@ -91,6 +91,26 @@
 
 ---
 
+### CUDA 支援（0221 更新，僅限 Source 版本，EXE 暫不支援）
+
+![CUDA 支援介面](Readme/readme06.jpg)
+
+現在可以支援 CUDA 以及原生 1.7B 模型，在 RTX 系列的顯示卡會有較好的辨識結果。要使用 CUDA 支援，請以 git 方式將 Source 整個 clone 下來，並點開 `start-gpu.bat` 進行環境配置。
+
+```bash
+git clone https://github.com/dseditor/QwenASRMiniTool.git
+cd QwenASRMiniTool
+start-gpu.bat
+```
+
+假使你的系統中已經有 torch 以及相關架構，可直接沿用，不再建立虛擬環境。此版本包含模型檢查，假使沒有模型，會自動從 HuggingFace 下載。
+
+![GPU 模型載入](Readme/readme07.jpg)
+
+啟動後會正確載入模型權重，使用 GPU 精準度會高上許多。
+
+---
+
 ## 更版方式
 
 ### Python 版本
@@ -119,7 +139,7 @@ git pull
 | 硬碟空間 | 2 GB（模型 1.2 GB + 程式）|
 | CPU | Intel 11th Gen+ 或同等級 AMD |
 
-> GPU 非必要。OpenVINO GPU 目前僅支援 Intel GPU，不支援 NVIDIA。
+> GPU 非必要，EXE 版本純 CPU 即可執行。若有 NVIDIA GPU（RTX 系列），可使用 Source 版本搭配 `start-gpu.bat` 啟用 CUDA 加速。
 
 ---
 
