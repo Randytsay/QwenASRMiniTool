@@ -344,6 +344,8 @@ class ASREngine:
         diarize: bool = False,
         n_speakers: int | None = None,
         text_cb=None,
+        abort_event=None,
+        write_txt: bool = False,
     ) -> Path | None:
         """音檔 → SRT，回傳 SRT 路徑。
         language   : 強制語系（如 "Chinese"），None 表示自動偵測
@@ -378,6 +380,7 @@ class ASREngine:
 
         # ── ASR 逐段轉錄 ─────────────────────────────────────────────
         all_subs: list[tuple[float, float, str, str | None]] = []
+        all_texts: list[str] = []
         total = len(groups_spk)
         for i, (g0, g1, chunk, spk) in enumerate(groups_spk):
             if progress_cb:
@@ -390,6 +393,12 @@ class ASREngine:
                 continue
             if text_cb:
                 text_cb(text)
+                
+            if spk:
+                all_texts.append(f"{spk}：{text}")
+            else:
+                all_texts.append(text)
+
             lines = _split_to_lines(text)
             all_subs.extend(
                 (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
@@ -406,6 +415,12 @@ class ASREngine:
             for idx, (s, e, line, spk) in enumerate(all_subs, 1):
                 prefix = f"{spk}：" if spk else ""
                 f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n\n")
+
+        if write_txt and all_texts:
+            out_txt = SRT_DIR / (audio_path.stem + ".txt")
+            with open(out_txt, "w", encoding="utf-8") as f:
+                f.write("\n".join(all_texts) + "\n")
+
         return out
 
 
@@ -753,6 +768,13 @@ class App(ctk.CTk):
             width=130, state="disabled", font=FONT_BODY,
         )
         self.lang_combo.pack(side="left", pady=12)
+
+        self.txt_var = ctk.BooleanVar(value=True)
+        self.txt_chk = ctk.CTkCheckBox(
+            dev_bar, text="同時輸出 TXT", variable=self.txt_var,
+            font=FONT_BODY, state="disabled"
+        )
+        self.txt_chk.pack(side="left", padx=(16, 0), pady=12)
 
         self.status_dot = ctk.CTkLabel(
             dev_bar, text="⏳ 啟動中…",
@@ -1811,6 +1833,9 @@ class App(ctk.CTk):
                 values=["自動偵測"] + common_langs, state="readonly"
             )
             self.lang_var.set("自動偵測")
+        
+        self.txt_chk.configure(state="normal")
+        
         # 說話者分離 checkbox
         if self.engine.diar_engine and self.engine.diar_engine.ready:
             self.diarize_chk.configure(state="normal")
@@ -2036,6 +2061,7 @@ class App(ctk.CTk):
         self.convert_btn.configure(state="disabled", text="轉換中…")
         self.stop_btn.configure(state="normal", text="🛑  停止")
         self.prog_bar.set(0)
+        self._file_txt_out = self.txt_var.get()
         self._file_log_clear()
         threading.Thread(target=self._convert_worker, daemon=True).start()
 
@@ -2088,6 +2114,7 @@ class App(ctk.CTk):
                 proc_path, progress_cb=prog_cb, language=language,
                 context=context, diarize=diarize, n_speakers=n_speakers,
                 text_cb=text_cb, abort_event=self._abort_event,
+                write_txt=getattr(self, "_file_txt_out", False)
             )
             elapsed = time.perf_counter() - t0
 
@@ -2095,10 +2122,15 @@ class App(ctk.CTk):
                 dest = path.with_suffix(".srt")
                 try:
                     import shutil
+                    txt_src = Path(str(srt)).with_suffix(".txt")
                     shutil.move(str(srt), str(dest))
                     srt = dest
+                    
+                    if getattr(self, "_file_txt_out", False) and txt_src.exists():
+                        txt_dest = dest.with_suffix(".txt")
+                        shutil.move(str(txt_src), str(txt_dest))
                 except Exception as e:
-                    self._file_log(f"⚠ 移動字幕檔失敗：{e}")
+                    self._file_log(f"⚠ 移動檔案失敗：{e}")
 
                 self._srt_output = srt
                 self._file_log(f"\n✅ 完成！耗時 {elapsed:.1f}s")
@@ -2109,6 +2141,11 @@ class App(ctk.CTk):
                     self.verify_btn.configure(state="normal"),
                     self.prog_label.configure(text=("部分完成" if self._abort_event.is_set() else "完成")),
                 ])
+                
+                # 若有勾選且確實產生了 .txt
+                txt_path = dest.with_suffix(".txt")
+                if getattr(self, "_file_txt_out", False) and txt_path.exists():
+                    self._file_log(f"TXT 儲存至：{txt_path}")
             else:
                 self._file_log("⚠ 未偵測到人聲或使用者已中止，未產生字幕")
                 self.after(0, lambda: self.prog_bar.set(0))

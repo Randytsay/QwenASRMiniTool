@@ -745,6 +745,8 @@ class ChatLLMASREngine:
         diarize:    bool = False,
         n_speakers: int | None = None,
         text_cb=None,
+        abort_event=None,
+        write_txt:  bool = False,
     ) -> Path | None:
         import librosa
 
@@ -771,8 +773,14 @@ class ChatLLMASREngine:
         groups_spk = self._enforce_chunk_limit(groups_spk)
 
         all_subs: list[tuple[float, float, str, str | None]] = []
+        all_texts: list[str] = []
         total = len(groups_spk)
         for i, (g0, g1, chunk, spk) in enumerate(groups_spk):
+            if abort_event and abort_event.is_set():
+                if progress_cb:
+                    progress_cb(i, total, "使用者中止，儲存已完成的部分字幕…")
+                break
+
             if progress_cb:
                 spk_info = f" [{spk}]" if spk else ""
                 progress_cb(i, total, f"[{i+1}/{total}] {g0:.1f}s~{g1:.1f}s{spk_info}")
@@ -781,6 +789,12 @@ class ChatLLMASREngine:
                 continue
             if text_cb:
                 text_cb(text)
+            
+            if spk:
+                all_texts.append(f"{spk}：{text}")
+            else:
+                all_texts.append(text)
+
             lines = _split_to_lines(text)
             all_subs.extend(
                 (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
@@ -789,7 +803,7 @@ class ChatLLMASREngine:
         if not all_subs:
             return None
 
-        if progress_cb:
+        if progress_cb and not (abort_event and abort_event.is_set()):
             progress_cb(total, total, "寫入 SRT…")
 
         SRT_DIR.mkdir(exist_ok=True)
@@ -798,6 +812,12 @@ class ChatLLMASREngine:
             for idx, (s, e, line, spk) in enumerate(all_subs, 1):
                 prefix = f"{spk}：" if spk else ""
                 f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n\n")
+
+        if write_txt and all_texts:
+            out_txt = SRT_DIR / (audio_path.stem + ".txt")
+            with open(out_txt, "w", encoding="utf-8") as f:
+                f.write("\n".join(all_texts) + "\n")
+
         return out
 
     def __del__(self):

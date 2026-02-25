@@ -126,6 +126,14 @@ class BatchTab(ctk.CTkFrame):
         self._stop_btn.pack(side="left", padx=(0, 8), pady=6)
 
         _sep(bar)
+        
+        self._txt_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            bar, text="同時輸出 TXT", variable=self._txt_var,
+            font=FONT_SMALL, text_color=("gray20", "#AAAACC")
+        ).pack(side="left", padx=(8, 4), pady=6)
+
+        _sep(bar)
 
         # 並行選項
         self._parallel_var = ctk.BooleanVar(value=False)
@@ -423,6 +431,7 @@ class BatchTab(ctk.CTkFrame):
         self._stop_evt.clear()
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
+        self._run_with_txt = self._txt_var.get()
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._futures.clear()
@@ -502,6 +511,7 @@ class BatchTab(ctk.CTkFrame):
                 progress_cb=_prog,
                 language=None,
                 context=None,
+                write_txt=getattr(self, "_run_with_txt", False),
             )
 
             # 若使用者指定了自訂輸出目錄，或預設輸出到音檔同目錄，把 SRT 搬過去
@@ -512,8 +522,13 @@ class BatchTab(ctk.CTkFrame):
                     dest = item.path.with_suffix(".srt")
                 try:
                     import shutil
+                    txt_src = Path(str(srt)).with_suffix(".txt")
                     shutil.move(str(srt), str(dest))
                     srt = dest
+                    
+                    if getattr(self, "_run_with_txt", False) and txt_src.exists():
+                        txt_dest = dest.with_suffix(".txt")
+                        shutil.move(str(txt_src), str(txt_dest))
                 except Exception:
                     pass
             item.srt_path = srt
