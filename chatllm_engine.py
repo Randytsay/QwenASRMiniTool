@@ -744,6 +744,7 @@ class ChatLLMASREngine:
         context:    str | None = None,
         diarize:    bool = False,
         n_speakers: int | None = None,
+        text_cb=None,
     ) -> Path | None:
         import librosa
 
@@ -778,6 +779,8 @@ class ChatLLMASREngine:
             text = self.transcribe(chunk, language=language, context=context)
             if not text:
                 continue
+            if text_cb:
+                text_cb(text)
             lines = _split_to_lines(text)
             all_subs.extend(
                 (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)

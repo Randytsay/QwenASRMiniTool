@@ -343,6 +343,7 @@ class ASREngine:
         context: str | None = None,
         diarize: bool = False,
         n_speakers: int | None = None,
+        text_cb=None,
     ) -> Path | None:
         """音檔 → SRT，回傳 SRT 路徑。
         language   : 強制語系（如 "Chinese"），None 表示自動偵測
@@ -387,6 +388,8 @@ class ASREngine:
             text = self.transcribe(chunk, max_tokens=max_tok, language=language, context=context)
             if not text:
                 continue
+            if text_cb:
+                text_cb(text)
             lines = _split_to_lines(text)
             all_subs.extend(
                 (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
@@ -824,6 +827,14 @@ class App(ctk.CTk):
             command=self._on_convert,
         )
         self.convert_btn.pack(side="left", padx=(0, 10))
+
+        self.stop_btn = ctk.CTkButton(
+            row2, text="🛑  停止", width=80, height=36,
+            font=FONT_BODY, state="disabled",
+            fg_color="#8B0000", hover_color="#A52A2A",
+            command=self._on_stop,
+        )
+        self.stop_btn.pack(side="left", padx=(0, 10))
 
         self.open_dir_btn = ctk.CTkButton(
             row2, text="📁  開啟輸出資料夾", width=150, height=36,
@@ -1979,6 +1990,11 @@ class App(ctk.CTk):
         else:
             os.startfile(str(SRT_DIR))
 
+    def _on_stop(self):
+        if self._converting and hasattr(self, '_abort_event'):
+            self._abort_event.set()
+            self.stop_btn.configure(state="disabled", text="停止中…")
+
     def _on_convert(self):
         if self._converting:
             return
@@ -2016,7 +2032,9 @@ class App(ctk.CTk):
     def _do_start_convert(self):
         """ffmpeg 確認後（或非影片檔案時）實際啟動轉換執行緒。"""
         self._converting = True
+        self._abort_event = threading.Event()
         self.convert_btn.configure(state="disabled", text="轉換中…")
+        self.stop_btn.configure(state="normal", text="🛑  停止")
         self.prog_bar.set(0)
         self._file_log_clear()
         threading.Thread(target=self._convert_worker, daemon=True).start()
@@ -2036,6 +2054,9 @@ class App(ctk.CTk):
             self.after(0, lambda: self.prog_bar.set(pct))
             self.after(0, lambda: self.prog_label.configure(text=msg))
             self._file_log(msg)
+
+        def text_cb(text):
+            self._file_log(f" └─ {text}")
 
         tmp_wav: Path | None = None
         try:
@@ -2066,6 +2087,7 @@ class App(ctk.CTk):
             srt = self.engine.process_file(
                 proc_path, progress_cb=prog_cb, language=language,
                 context=context, diarize=diarize, n_speakers=n_speakers,
+                text_cb=text_cb, abort_event=self._abort_event,
             )
             elapsed = time.perf_counter() - t0
 
@@ -2085,10 +2107,10 @@ class App(ctk.CTk):
                     self.prog_bar.set(1.0),
                     self.open_dir_btn.configure(state="normal"),
                     self.verify_btn.configure(state="normal"),
-                    self.prog_label.configure(text="完成"),
+                    self.prog_label.configure(text=("部分完成" if self._abort_event.is_set() else "完成")),
                 ])
             else:
-                self._file_log("⚠ 未偵測到人聲，未產生字幕")
+                self._file_log("⚠ 未偵測到人聲或使用者已中止，未產生字幕")
                 self.after(0, lambda: self.prog_bar.set(0))
         except Exception as e:
             self._file_log(f"❌ 錯誤：{e}")
@@ -2101,9 +2123,10 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             self._converting = False
-            self.after(0, lambda: self.convert_btn.configure(
-                state="normal", text="▶  開始轉換"
-            ))
+            self.after(0, lambda: [
+                self.convert_btn.configure(state="normal", text="▶  開始轉換"),
+                self.stop_btn.configure(state="disabled", text="🛑  停止"),
+            ])
 
     def _file_log(self, msg: str):
         def _do():

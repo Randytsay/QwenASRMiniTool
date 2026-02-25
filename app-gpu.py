@@ -59,8 +59,20 @@ SETTINGS_FILE   = BASE_DIR / "settings-gpu.json"
 SRT_DIR         = BASE_DIR / "subtitles"
 SRT_DIR.mkdir(exist_ok=True)
 
-ASR_MODEL_NAME      = "Qwen3-ASR-1.7B"
+# 預設辨識模型名稱（如果沒有從選單中選擇，就當作預設回退）
+DEFAULT_ASR_MODEL_NAME      = "Qwen3-ASR-1.7B"
 ALIGNER_MODEL_NAME  = "Qwen3-ForcedAligner-0.6B"
+
+def get_available_models():
+    """掃描 GPUModel 目錄底下可用的 PyTorch ASR 模型。"""
+    if not GPU_MODEL_DIR.exists():
+        return []
+    models = []
+    # 簡易判斷：該資料夾底下是否包含 pytorch_model*.bin 或是 model*.safetensors
+    for d in GPU_MODEL_DIR.iterdir():
+        if d.is_dir() and (list(d.glob("*.bin")) or list(d.glob("*.safetensors")) or list(d.glob("*.pt"))):
+            models.append(d.name)
+    return sorted(models) or [DEFAULT_ASR_MODEL_NAME]
 
 # ── 語系清單（與 CPU 版相同，來自 Qwen3-ASR 規格）────────────────────
 SUPPORTED_LANGUAGES = [
@@ -216,7 +228,7 @@ class GPUASREngine:
         self.cc         = None
         self.diar_engine = None
 
-    def load(self, device: str = "cuda", model_dir: Path = None, cb=None):
+    def load(self, device: str = "cuda", model_dir: Path = None, model_name: str = None, cb=None):
         """從背景執行緒呼叫。device: 'cuda' 或 'cpu'。"""
         import torch
         import onnxruntime as ort
@@ -225,8 +237,11 @@ class GPUASREngine:
 
         if model_dir is None:
             model_dir = GPU_MODEL_DIR
+        
+        if model_name is None:
+            model_name = DEFAULT_ASR_MODEL_NAME
 
-        asr_path = model_dir / ASR_MODEL_NAME
+        asr_path = model_dir / model_name
 
         def _s(msg):
             if cb: cb(msg)
@@ -258,7 +273,7 @@ class GPUASREngine:
         if not asr_path.exists():
             raise FileNotFoundError(
                 f"找不到 ASR 模型：{asr_path}\n"
-                f"請將 {ASR_MODEL_NAME} 放入 {model_dir}"
+                f"請將 {model_name} 放入 {model_dir}"
             )
 
         import torch
@@ -274,7 +289,7 @@ class GPUASREngine:
 
         self.cc    = opencc.OpenCC("s2twp")
         self.ready = True
-        _s(f"就緒（{device.upper()}  {ASR_MODEL_NAME}）")
+        _s(f"就緒（{device.upper()}  {model_name}）")
 
     def transcribe(
         self,
@@ -301,6 +316,8 @@ class GPUASREngine:
         context: str | None = None,
         diarize: bool = False,
         n_speakers: int | None = None,
+        text_cb=None,
+        abort_event=None,
     ) -> Path | None:
         """音檔 → SRT，回傳 SRT 路徑。"""
         import librosa
@@ -326,12 +343,19 @@ class GPUASREngine:
         all_subs: list[tuple[float, float, str, str | None]] = []
         total = len(groups_spk)
         for i, (g0, g1, chunk, spk) in enumerate(groups_spk):
+            if abort_event and abort_event.is_set():
+                if progress_cb:
+                    progress_cb(i, total, "使用者中止，儲存已完成的部分字幕…")
+                break
+
             if progress_cb:
                 spk_info = f" [{spk}]" if spk else ""
                 progress_cb(i, total, f"[{i+1}/{total}] {g0:.1f}s~{g1:.1f}s{spk_info}")
             text = self.transcribe(chunk, language=language, context=context)
             if not text:
                 continue
+            if text_cb:
+                text_cb(text)
             lines = _split_to_lines(text)
             all_subs.extend(
                 (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
@@ -340,7 +364,7 @@ class GPUASREngine:
         if not all_subs:
             return None
 
-        if progress_cb:
+        if progress_cb and not (abort_event and abort_event.is_set()):
             progress_cb(total, total, "寫入 SRT…")
 
         out = SRT_DIR / (audio_path.stem + ".srt")
@@ -497,6 +521,17 @@ class App(ctk.CTk):
         )
         self.device_combo.pack(side="left", pady=12)
 
+        ctk.CTkLabel(dev_bar, text="模型：", font=FONT_BODY).pack(
+            side="left", padx=(14, 4), pady=12
+        )
+        available_models = get_available_models()
+        self.model_var = ctk.StringVar(value=available_models[0] if available_models else DEFAULT_ASR_MODEL_NAME)
+        self.model_combo = ctk.CTkComboBox(
+            dev_bar, values=available_models if available_models else [DEFAULT_ASR_MODEL_NAME], 
+            variable=self.model_var, width=180, state="readonly", font=FONT_BODY,
+        )
+        self.model_combo.pack(side="left", pady=12)
+
         self.reload_btn = ctk.CTkButton(
             dev_bar, text="重新載入", width=90, state="disabled",
             font=FONT_BODY, fg_color="gray35", hover_color="gray25",
@@ -562,6 +597,14 @@ class App(ctk.CTk):
             command=self._on_convert,
         )
         self.convert_btn.pack(side="left", padx=(0, 10))
+
+        self.stop_btn = ctk.CTkButton(
+            row2, text="🛑  停止", width=80, height=36,
+            font=FONT_BODY, state="disabled",
+            fg_color="#8B0000", hover_color="#A52A2A",
+            command=self._on_stop,
+        )
+        self.stop_btn.pack(side="left", padx=(0, 10))
 
         self.open_dir_btn = ctk.CTkButton(
             row2, text="📁  開啟輸出資料夾", width=150, height=36,
@@ -809,28 +852,32 @@ class App(ctk.CTk):
         settings = self._load_settings()
         global _g_output_simplified
         _g_output_simplified = settings.get("output_simplified", False)
-        self.after(0, lambda s=settings: self._apply_ui_prefs(s))
+        self._apply_ui_prefs(settings)
 
-        asr_path = GPU_MODEL_DIR / ASR_MODEL_NAME
-        if not asr_path.exists():
-            self.after(0, lambda: self._show_missing_model_error(asr_path))
-            return
-        self._set_status("⏳ 模型載入中…")
-        self._load_models()
+        # 延遲一點點時間啟動載入，讓介面優先繪製完畢
+        self.after(50, self._load_models)
 
-    def _show_missing_model_error(self, missing: Path):
+    def _show_missing_model_error(self, missing: Path, model_name: str):
         self._set_status("❌ 找不到模型")
         messagebox.showerror(
             "找不到 GPU 模型",
             f"找不到 ASR 模型：\n{missing}\n\n"
-            f"請將 {ASR_MODEL_NAME} 下載並放入：\n{GPU_MODEL_DIR}\n\n"
+            f"請將 {model_name} 下載並放入：\n{GPU_MODEL_DIR}\n\n"
             "可執行 start-gpu.bat 並選擇自動下載。",
         )
 
     def _load_models(self):
         device = self._get_torch_device()
+        model_name = self.model_var.get()
+        asr_path = GPU_MODEL_DIR / model_name
+        
+        if not asr_path.exists():
+            self.after(0, lambda m=asr_path, n=model_name: self._show_missing_model_error(m, n))
+            return
+            
+        self._set_status("⏳ 模型載入中…")
         try:
-            self.engine.load(device=device, model_dir=GPU_MODEL_DIR, cb=self._set_status)
+            self.engine.load(device=device, model_dir=GPU_MODEL_DIR, model_name=model_name, cb=self._set_status)
             self.after(0, self._on_models_ready)
         except Exception as e:
             first_line = str(e).splitlines()[0][:140]
@@ -852,6 +899,7 @@ class App(ctk.CTk):
 
     def _on_models_failed(self, device: str, reason: str):
         self.device_combo.configure(state="readonly")
+        self.model_combo.configure(state="readonly")
         self.reload_btn.configure(state="normal")
         self.status_dot.configure(
             text=f"❌ {device} 載入失敗，請切換裝置後點「重新載入」",
@@ -873,6 +921,7 @@ class App(ctk.CTk):
         self.convert_btn.configure(state="disabled")
         self.rt_start_btn.configure(state="disabled")
         self.reload_btn.configure(state="disabled")
+        self.model_combo.configure(state="disabled")
         threading.Thread(target=self._load_models, daemon=True).start()
 
     def _set_status(self, msg: str):
@@ -978,6 +1027,11 @@ class App(ctk.CTk):
         else:
             os.startfile(str(SRT_DIR))
 
+    def _on_stop(self):
+        if self._converting and hasattr(self, '_abort_event'):
+            self._abort_event.set()
+            self.stop_btn.configure(state="disabled", text="停止中…")
+
     def _on_convert(self):
         if self._converting:
             return
@@ -1014,7 +1068,9 @@ class App(ctk.CTk):
 
     def _do_start_convert(self):
         self._converting = True
+        self._abort_event = threading.Event()
         self.convert_btn.configure(state="disabled", text="轉換中…")
+        self.stop_btn.configure(state="normal", text="🛑  停止")
         self.prog_bar.set(0)
         self._file_log_clear()
         threading.Thread(target=self._convert_worker, daemon=True).start()
@@ -1032,6 +1088,9 @@ class App(ctk.CTk):
             self.after(0, lambda: self.prog_bar.set(pct))
             self.after(0, lambda: self.prog_label.configure(text=msg))
             self._file_log(msg)
+
+        def text_cb(text):
+            self._file_log(f" └─ {text}")
 
         tmp_wav: "Path | None" = None
         try:
@@ -1062,6 +1121,7 @@ class App(ctk.CTk):
             srt = self.engine.process_file(
                 proc_path, progress_cb=prog_cb, language=language,
                 context=context, diarize=diarize, n_speakers=n_speakers,
+                text_cb=text_cb, abort_event=self._abort_event,
             )
             elapsed = time.perf_counter() - t0
 
@@ -1083,10 +1143,10 @@ class App(ctk.CTk):
                     self.subtitle_btn.configure(
                         state="normal" if _SUBTITLE_EDITOR_AVAILABLE else "disabled"
                     ),
-                    self.prog_label.configure(text="完成"),
+                    self.prog_label.configure(text=("部分完成" if self._abort_event.is_set() else "完成")),
                 ])
             else:
-                self._file_log("⚠ 未偵測到人聲，未產生字幕")
+                self._file_log("⚠ 未偵測到人聲或使用者已中止，未產生字幕")
                 self.after(0, lambda: self.prog_bar.set(0))
         except Exception as e:
             self._file_log(f"❌ 錯誤：{e}")
@@ -1099,9 +1159,10 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             self._converting = False
-            self.after(0, lambda: self.convert_btn.configure(
-                state="normal", text="▶  開始轉換"
-            ))
+            self.after(0, lambda: [
+                self.convert_btn.configure(state="normal", text="▶  開始轉換"),
+                self.stop_btn.configure(state="disabled", text="🛑  停止"),
+            ])
 
     def _file_log(self, msg: str):
         def _do():
