@@ -567,7 +567,7 @@ class App(ctk.CTk):
             row2, text="📁  開啟輸出資料夾", width=150, height=36,
             font=FONT_BODY, state="disabled",
             fg_color="gray35", hover_color="gray25",
-            command=lambda: os.startfile(str(SRT_DIR)),
+            command=self._on_open_dir,
         )
         self.open_dir_btn.pack(side="left")
 
@@ -969,6 +969,15 @@ class App(ctk.CTk):
             if self.engine.ready:
                 self.convert_btn.configure(state="normal")
 
+    def _on_open_dir(self):
+        """開啟輸出資料夾"""
+        if self._srt_output and self._srt_output.exists():
+            os.startfile(str(self._srt_output.parent))
+        elif self._audio_file and self._audio_file.exists():
+            os.startfile(str(self._audio_file.parent))
+        else:
+            os.startfile(str(SRT_DIR))
+
     def _on_convert(self):
         if self._converting:
             return
@@ -1057,6 +1066,14 @@ class App(ctk.CTk):
             elapsed = time.perf_counter() - t0
 
             if srt:
+                dest = path.with_suffix(".srt")
+                try:
+                    import shutil
+                    shutil.move(str(srt), str(dest))
+                    srt = dest
+                except Exception as e:
+                    self._file_log(f"⚠ 移動字幕檔失敗：{e}")
+
                 self._srt_output = srt
                 self._file_log(f"\n✅ 完成！耗時 {elapsed:.1f}s")
                 self._file_log(f"SRT 儲存至：{srt}")

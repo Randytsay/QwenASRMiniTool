@@ -504,11 +504,15 @@ class BatchTab(ctk.CTkFrame):
                 context=None,
             )
 
-            # 若使用者指定了自訂輸出目錄，把 SRT 搬過去
-            if srt and self._out_dir:
-                dest = self._out_dir / srt.name
+            # 若使用者指定了自訂輸出目錄，或預設輸出到音檔同目錄，把 SRT 搬過去
+            if srt:
+                if self._out_dir:
+                    dest = self._out_dir / srt.name
+                else:
+                    dest = item.path.with_suffix(".srt")
                 try:
-                    srt.rename(dest)
+                    import shutil
+                    shutil.move(str(srt), str(dest))
                     srt = dest
                 except Exception:
                     pass
