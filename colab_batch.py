@@ -9,8 +9,10 @@ import onnxruntime as ort
 import opencc
 
 # ── 設定 ──────────────────────────────────────────────────
-# 請修改此處為你的 Google Drive 資料夾路徑
-TARGET_DIR = "/content/drive/MyDrive/Your_Folder" 
+# 支援從 Colab 環境變數中讀取，方便在 Notebook 內即時修改
+# 可以將反斜線替換為正斜線以符合 Colab (Linux) 環境
+TARGET_DIR = os.environ.get("TARGET_DIR", "/content/drive/MyDrive/01 美安/01 態度與知識/01 GMTSS課程/09 產品專題會/2023美安台灣產品專題會/公司提供錄音檔")
+
 # 支援的格式
 EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".mp4", ".mkv", ".mov"}
 # 模型路徑 (Colab 上的相對路徑)
