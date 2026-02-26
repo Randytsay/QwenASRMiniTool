@@ -21,6 +21,33 @@ GPU_MODEL_DIR = BASE_DIR / "GPUModel"
 OV_MODEL_DIR  = BASE_DIR / "ov_models"
 VAD_PATH      = GPU_MODEL_DIR / "silero_vad_v4.onnx"
 
+# ── 確保模型已下載 ────────────────────────────────────────
+
+def ensure_models_downloaded():
+    asr_dir = GPU_MODEL_DIR / "Qwen3-ASR-1.7B"
+    if not (asr_dir / "config.json").exists():
+        print("⏳ 正在從 HuggingFace 下載 Qwen3-ASR-1.7B 模型 (約 3.5GB)...")
+        from huggingface_hub import snapshot_download
+        asr_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            "Qwen/Qwen3-ASR-1.7B", 
+            local_dir=str(asr_dir), 
+            ignore_patterns=["*.md", "flax_model*", "tf_model*"]
+        )
+        print("✅ Qwen3-ASR-1.7B 下載完成！")
+
+    if not VAD_PATH.exists():
+        print("⏳ 正在下載 Silero VAD 模型...")
+        import urllib.request
+        VAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://github.com/snakers4/silero-vad/raw/v4.0/files/silero_vad.onnx", 
+            str(VAD_PATH)
+        )
+        print("✅ VAD 模型下載完成！")
+
+ensure_models_downloaded()
+
 # ── 初始化 ────────────────────────────────────────────────
 print("🔄 正在初始模型...")
 def load_engine():
