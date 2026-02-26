@@ -443,7 +443,7 @@ def _transcribe(eng: dict, audio: np.ndarray, language=None, context=None) -> st
 def _process_file(eng: dict, audio_path: Path,
                   language=None, context=None,
                   diarize=False, n_speakers=None,
-                  progress_cb=None) -> str | None:
+                  progress_cb=None, snippet_cb=None) -> str | None:
     import librosa
     audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
 
@@ -463,12 +463,20 @@ def _process_file(eng: dict, audio_path: Path,
 
     all_subs: list[tuple[float, float, str, str | None]] = []
     total = len(groups)
+    full_text_lines = []
+    
     for i, (g0, g1, chunk, spk) in enumerate(groups):
         if progress_cb:
             progress_cb(i / total, f"[{i+1}/{total}] {g0:.1f}s ~ {g1:.1f}s")
         text = _transcribe(eng, chunk, language=language, context=context)
         if not text:
             continue
+        
+        # 即時回報辨識出的文字
+        if snippet_cb:
+            snippet_cb(text, spk)
+        
+        full_text_lines.append(text)
         lines = _split_to_lines(text)
         for s, e, line in _assign_ts(lines, g0, g1):
             all_subs.append((s, e, line, spk))
@@ -480,7 +488,9 @@ def _process_file(eng: dict, audio_path: Path,
     for idx, (s, e, line, spk) in enumerate(all_subs, 1):
         prefix = f"{spk}：" if spk else ""
         srt_lines.append(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n")
-    return "\n".join(srt_lines)
+    
+    # 將 SRT 內容與純文字內容一起回傳
+    return "\n".join(srt_lines), " ".join(full_text_lines)
 
 
 # ══════════════════════════════════════════════════════════
@@ -679,25 +689,60 @@ def _tab_file(eng: dict | None):
         try:
             t0 = time.perf_counter()
             _cb(0.02, "音訊載入中…")
-            srt_content = _process_file(
+            
+            # 準備即時顯示區域
+            preview_area = st.empty()
+            dynamic_log = []
+            
+            def _snippet_cb(text, spk):
+                prefix = f"**{spk}:** " if spk else ""
+                dynamic_log.append(f"{prefix}{text}")
+                preview_content = "\n\n".join(dynamic_log[-5:]) # 顯示最後 5 句
+                preview_area.markdown(f"""
+<div style="background:rgba(255,255,255,0.05); border-radius:10px; padding:15px; margin-top:10px; border:1px solid rgba(14,165,233,0.2);">
+  <div style="color:#7dd3fc; font-size:0.75rem; font-weight:700; margin-bottom:8px;">📡 正在辨識...</div>
+  <div style="color:#cbd5e1; font-size:0.9rem; line-height:1.5;">{preview_content}</div>
+</div>""", unsafe_allow_html=True)
+
+            res = _process_file(
                 eng, tmp_path,
                 language=lang, context=context,
                 diarize=diar, n_speakers=n_spk,
                 progress_cb=_cb,
+                snippet_cb=_snippet_cb
             )
-            elapsed = time.perf_counter() - t0
-            prog_bar.progress(1.0)
-
-            if srt_content:
+            
+            # 清除即時預覽區
+            preview_area.empty()
+            
+            if res:
+                srt_content, txt_content = res
+                elapsed = time.perf_counter() - t0
+                prog_bar.progress(1.0)
+                
                 st.session_state["srt_content"]  = srt_content
-                st.session_state["srt_filename"]  = uploaded.name.rsplit(".", 1)[0] + ".srt"
-                st.session_state["srt_elapsed"]   = elapsed
+                st.session_state["txt_content"]  = txt_content
+                st.session_state["srt_filename"] = uploaded.name.rsplit(".", 1)[0]
+                st.session_state["srt_elapsed"]  = elapsed
+                
+                # 自動備份到雲端硬碟的 subtitles 資料夾
+                try:
+                    save_path_srt = SRT_DIR / f"{st.session_state['srt_filename']}.srt"
+                    with open(save_path_srt, "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                    save_path_txt = SRT_DIR / f"{st.session_state['srt_filename']}.txt"
+                    with open(save_path_txt, "w", encoding="utf-8") as f:
+                        f.write(txt_content)
+                except Exception:
+                    pass
+
                 prog_label.markdown(
                     f'<div style="color:#4ade80; font-size:0.85rem; font-weight:600;">'
                     f'✅ 完成！耗時 {elapsed:.1f}s</div>',
                     unsafe_allow_html=True
                 )
             else:
+                prog_bar.progress(1.0)
                 prog_label.markdown(
                     '<div style="color:#fbbf24; font-size:0.85rem;">'
                     '⚠ 未偵測到人聲，無字幕產生</div>',
@@ -721,7 +766,7 @@ def _tab_file(eng: dict | None):
         fname   = st.session_state.get("srt_filename", "output.srt")
         elapsed = st.session_state.get("srt_elapsed", 0)
 
-        c1, c2 = st.columns([3, 1])
+        c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             st.markdown(
                 f'<div style="color:#7dd3fc; font-weight:700; font-size:1rem;">'
@@ -734,7 +779,16 @@ def _tab_file(eng: dict | None):
             st.download_button(
                 label="⬇ 下載 SRT",
                 data=srt.encode("utf-8"),
-                file_name=fname,
+                file_name=f"{fname}.srt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with c3:
+            txt = st.session_state.get("txt_content", "")
+            st.download_button(
+                label="📄 下載 TXT",
+                data=txt.encode("utf-8"),
+                file_name=f"{fname}.txt",
                 mime="text/plain",
                 use_container_width=True,
             )
@@ -746,7 +800,7 @@ def _tab_file(eng: dict | None):
         )
 
         if st.button("🗑 清除結果", use_container_width=False):
-            for k in ("srt_content", "srt_filename", "srt_elapsed"):
+            for k in ("srt_content", "txt_content", "srt_filename", "srt_elapsed"):
                 st.session_state.pop(k, None)
             st.rerun()
 
